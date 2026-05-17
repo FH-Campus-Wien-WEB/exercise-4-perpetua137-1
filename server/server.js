@@ -6,6 +6,9 @@ const bcrypt = require("bcrypt");
 const config = require("./config.js");
 const movieModel = require("./movie-model.js");
 const userModel = require("./user-model.js");
+const { request } = require("http");
+const { clearTimeout } = require("timers");
+const { time } = require("console");
 
 const app = express();
 
@@ -19,6 +22,14 @@ app.use(session({
   saveUninitialized: true,
   cookie: { secure: false } // Set to true if using HTTPS
 }));
+
+function requireLogin(req, res, next) {
+  if(!req.session.user) {
+    return res.sendStatus(401);
+  }
+
+  next();
+}
 
 // Serve static content in directory 'files'
 app.use(express.static(path.join(__dirname, "files")));
@@ -44,6 +55,19 @@ app.post("/login", function (req, res) {
 // with error handling. Protect all endpoints that need 
 // authentication with `requireLogin`.
 
+app.get("/logout", function (req, res) {
+
+  req.session.destroy((err) => {
+
+    if (err) {
+      console.error("Logout failed: ", err);
+      return res.sendStatus(500);
+    }
+
+    res.sendStatus(200);
+  })
+})
+
 app.get("/session", function (req, res) {
   if (req.session.user) {
     res.send(req.session.user);
@@ -52,18 +76,35 @@ app.get("/session", function (req, res) {
   }
 });
 
-app.get("/movies", function (req, res) {
+app.get("/movies", requireLogin, function (req, res) {
   const username = req.session.user.username;
   let movies = Object.values(movieModel.getUserMovies(username));
   const queriedGenre = req.query.genre;
   if (queriedGenre) {
-    movies = movies.filter((movie) => movie.Genres.indexOf(queriedGenre) >= 0);
+    //movies = movies.filter((movie) => movie.Genres.indexOf(queriedGenre) >= 0);
+    movies = movies.filter((movie) => {
+      const genreList = movie.Genres || movie.genres || [];
+      return genreList.indexOf(queriedGenre) >= 0;
+    });
   }
-  res.send(movies);
+
+  // Map over the movies to ensure BOTH lowercase and uppercase fields exist
+  const safeMovies = movies.map(movie => ({
+    ...movie,
+    title: movie.title || movie.Title,
+    Title: movie.Title || movie.title,
+    year: movie.year || movie.Year,
+    Year: movie.Year || movie.year,
+    genres: movie.genres || movie.Genres || [], // Ensures array is never undefined!
+    Genres: movie.Genres || movie.genres || []
+  }));
+
+  res.send(safeMovies);
+  //res.send(movies);
 });
 
 // Configure a 'get' endpoint for a specific movie
-app.get("/movies/:imdbID", function (req, res) {
+app.get("/movies/:imdbID", requireLogin, function (req, res) {
   const username = req.session.user.username;
   const id = req.params.imdbID;
   const movie = movieModel.getUserMovie(username, id);
@@ -76,7 +117,7 @@ app.get("/movies/:imdbID", function (req, res) {
 });
 
 // Configure a 'put' endpoint for a specific movie to update or insert a movie
-app.put("/movies/:imdbID", function (req, res) {
+app.put("/movies/:imdbID", requireLogin, function (req, res) {
   const username = req.session.user.username;
   const imdbID = req.params.imdbID;
   const exists = movieModel.getUserMovie(username, imdbID) !== undefined;
@@ -85,13 +126,76 @@ app.put("/movies/:imdbID", function (req, res) {
     // Task 2.3: Fetch the movie data from OmdbAPI, follow the pattern used further down 
     // in the GET /search endpoint. Implement conversion of the OmdbAPI response to the 
     // movie format used in the frontend. Make sure to handle errors and timeouts properly.
+
+    const url = `https://www.omdbapi.com/?i=${imdbID}&apikey=${config.omdbApiKey}`;
+
+    const controller = new AbortController();
+
+    const timeoutId = setTimeout(() => controller.abort(), config.omdbTimeoutMs);
+
+    fetch(url, { signal: controller.signal })
+    .then(apiRes => {
+      clearTimeout(timeoutId);
+      if(!apiRes.ok) {
+        return res.sendStatus(apiRes.status);
+      }
+
+      return apiRes.text().then(data => {
+        let movie;
+        try{
+          movie = JSON.parse(data);
+        } catch (parseError) {
+          console.error('Failed to parse OMDb response: ', parseError);
+          return res.sendStatus(500);
+        }
+
+        if (movie.Response === 'False') {
+          return res.sendStatus(404);
+        }
+
+        const convertedMovie = {
+          imdbID: movie.imdbID,
+          Title: movie.Title,
+          title: movie.Title,
+          Year: isNaN(movie.Year) ? null : parseInt(movie.Year),
+          year: isNaN(movie.Year) ? null : parseInt(movie.Year),
+          Genres: movie.Genre ? movie.Genre.split(", ") : [],
+          genres: movie.Genre ? movie.Genre.split(", ") : [],
+          Poster: movie.Poster,
+          Director: movie.Director,
+          Plot: movie.Plot,
+          Runtime: movie.Runtime
+        };
+
+        movieModel.setUserMovie(
+          username,
+          imdbID,
+          convertedMovie
+        );
+
+        res.sendStatus(201);
+      });
+    })
+
+    .catch(err => {
+      clearTimeout(timeoutId);
+
+      if(err.name === 'AbortError') {
+        console.error('OMDb API timeout');
+        return res.sendStatus(504);
+      } 
+
+      console.error('OMDb API error:', err);
+      res.sendStatus(500);
+      
+    });
   } else {
     movieModel.setUserMovie(username, imdbID, req.body);
     res.sendStatus(200);
   }
 });
 
-app.delete("/movies/:imdbID", function (req, res) {
+app.delete("/movies/:imdbID", requireLogin, function (req, res) {
   const username = req.session.user.username;
   const id = req.params.imdbID;
   if (movieModel.deleteUserMovie(username, id)) {
@@ -102,7 +206,7 @@ app.delete("/movies/:imdbID", function (req, res) {
 });
 
 // Configure a 'get' endpoint for genres of all movies of the current user
-app.get("/genres", function (req, res) {
+app.get("/genres", requireLogin, function (req, res) {
   const username = req.session.user.username;
   const genres = movieModel.getGenres(username);
   genres.sort();
@@ -112,14 +216,14 @@ app.get("/genres", function (req, res) {
 /* Task 2.1. Add the GET /search endpoint: Query omdbapi.com and return
    a list of the results you obtain. Only include the properties 
    mentioned in the README when sending back the results to the client. */
-app.get("/search", function (req, res) {
+app.get("/search", requireLogin, function (req, res) {
   const username = req.session.user.username;
   const query = req.query.query;
   if (!query) {
     return res.sendStatus(400);
   }
 
-  const url = `http://www.omdbapi.com/?s=${encodeURIComponent(query)}&apikey=${config.omdbApiKey}`;
+  const url = `https://www.omdbapi.com/?s=${encodeURIComponent(query)}&apikey=${config.omdbApiKey}`;
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), config.omdbTimeoutMs);
