@@ -127,7 +127,7 @@ app.put("/movies/:imdbID", requireLogin, function (req, res) {
     // in the GET /search endpoint. Implement conversion of the OmdbAPI response to the 
     // movie format used in the frontend. Make sure to handle errors and timeouts properly.
 
-    const url = `https://www.omdbapi.com/?i=${imdbID}&apikey=${config.omdbApiKey}`;
+    const url = `http://www.omdbapi.com/?i=${imdbID}&apikey=${config.omdbApiKey}`;
 
     const controller = new AbortController();
 
@@ -223,7 +223,7 @@ app.get("/search", requireLogin, function (req, res) {
     return res.sendStatus(400);
   }
 
-  const url = `https://www.omdbapi.com/?s=${encodeURIComponent(query)}&apikey=${config.omdbApiKey}`;
+  const url = `http://www.omdbapi.com/?s=${encodeURIComponent(query)}&apikey=${config.omdbApiKey}`;
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), config.omdbTimeoutMs);
