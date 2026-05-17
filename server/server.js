@@ -78,26 +78,52 @@ app.get("/session", function (req, res) {
 
 app.get("/movies", requireLogin, function (req, res) {
   const username = req.session.user.username;
-  let movies = Object.values(movieModel.getUserMovies(username));
+  const userMoviesRaw = movieModel.getUserMovies(username) || {};
+  let moviesArray = Object.values(userMoviesRaw);
+  
   const queriedGenre = req.query.genre;
   if (queriedGenre) {
-    //movies = movies.filter((movie) => movie.Genres.indexOf(queriedGenre) >= 0);
-    movies = movies.filter((movie) => {
+    moviesArray = moviesArray.filter((movie) => {
       const genreList = movie.Genres || movie.genres || [];
       return genreList.indexOf(queriedGenre) >= 0;
     });
   }
 
-  // Map over the movies to ensure BOTH lowercase and uppercase fields exist
-  const safeMovies = movies.map(movie => ({
-    ...movie,
-    title: movie.title || movie.Title,
-    Title: movie.Title || movie.title,
-    year: movie.year || movie.Year,
-    Year: movie.Year || movie.year,
-    genres: movie.genres || movie.Genres || [], // Ensures array is never undefined!
-    Genres: movie.Genres || movie.genres || []
-  }));
+  const safeMovies = moviesArray.map(movie => {
+    // Helper function to force convert a string field to an array if it isn't one already
+    const ensureArray = (val) => {
+      if (Array.isArray(val)) return val;
+      if (typeof val === 'string') return val.split(", ");
+      return [];
+    };
+
+    const genres = ensureArray(movie.genres || movie.Genres || movie.Genre);
+    const directors = ensureArray(movie.directors || movie.Directors || movie.Director);
+    const writers = ensureArray(movie.writers || movie.Writers || movie.Writer);
+    const actors = ensureArray(movie.actors || movie.Actors || movie.Actor);
+
+    return {
+      ...movie,
+      Title: movie.Title || movie.title,
+      title: movie.title || movie.Title,
+      Year: movie.Year || movie.year,
+      year: movie.year || movie.Year,
+      Runtime: movie.Runtime ? parseInt(movie.Runtime) : 0,
+      Released: movie.Released,
+      Poster: movie.Poster || "",
+      Plot: movie.Plot || "",
+      
+      // Provide both casing alternatives as valid arrays
+      Genres: genres,
+      genres: genres,
+      Directors: directors,
+      directors: directors,
+      Writers: writers,
+      writers: writers,
+      Actors: actors,
+      actors: actors
+    };
+  });
 
   res.send(safeMovies);
   //res.send(movies);
@@ -159,12 +185,23 @@ app.put("/movies/:imdbID", requireLogin, function (req, res) {
           title: movie.Title,
           Year: isNaN(movie.Year) ? null : parseInt(movie.Year),
           year: isNaN(movie.Year) ? null : parseInt(movie.Year),
+          Poster: movie.Poster,
+          Plot: movie.Plot,
+          Runtime: movie.Runtime,
+          Released: movie.Released,
+
+          // Convert ALL comma-separated strings from OMDb into arrays for the builder
           Genres: movie.Genre ? movie.Genre.split(", ") : [],
           genres: movie.Genre ? movie.Genre.split(", ") : [],
-          Poster: movie.Poster,
-          Director: movie.Director,
-          Plot: movie.Plot,
-          Runtime: movie.Runtime
+          
+          Directors: movie.Director ? movie.Director.split(", ") : [],
+          directors: movie.Director ? movie.Director.split(", ") : [],
+          
+          Writers: movie.Writer ? movie.Writer.split(", ") : [],
+          writers: movie.Writer ? movie.Writer.split(", ") : [],
+          
+          Actors: movie.Actor ? movie.Actor.split(", ") : [],
+          actors: movie.Actor ? movie.Actor.split(", ") : []
         };
 
         movieModel.setUserMovie(
